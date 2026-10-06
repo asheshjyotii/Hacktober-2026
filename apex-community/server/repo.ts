@@ -43,7 +43,7 @@ export function buildContext(r: RepoData, o: ContextOpts): string {
 export function parseRepo(input: string): string {
   const cleaned = (input ?? "")
     .trim()
-    .replace(/^https?:\/\/(www\.)?github\.com\//i, "")
+    .replace(/^(https?:\/\/)?(www\.)?github\.com\//i, "")
     .replace(/\.git$/, "")
     .replace(/\/+$/, "")
     .split("/")
@@ -121,8 +121,8 @@ export function score(p: string): number {
   else if (/^(cli|core|wsgi|asgi|manage|api|router|routes|handler|engine)\.(py|go|rs|rb|ts|js)$/.test(base)) s = 14;
   else if (/(^|\/)cmd\//.test(lower)) s = 12;
   else if (/^(dockerfile|docker-compose\.ya?ml|makefile|tsconfig\.json)$/.test(base) || lower.startsWith(".github/workflows/")) s = 25;
-  else if (/(^|\/)(src|lib|app|pkg|internal|core)\//.test(lower)) s = 35;
   else if (/(^|\/)(test|tests|__tests__|docs?|examples?)\//.test(lower) || /\.(test|spec)\./.test(lower) || /_test\.go$|(^|\/)test_\w+\.py$/.test(lower)) s = 70;
+  else if (/(^|\/)(src|lib|app|pkg|internal|core)\//.test(lower)) s = 35;
   return s + depth * 3;
 }
 
