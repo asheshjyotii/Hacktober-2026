@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { extractJSON } from "../server/model";
-import { SCHEMA_B, toGeminiSchema, toStrictSchema } from "../server/schema";
+import { SCHEMA_P, SCHEMA_R, toGeminiSchema, toStrictSchema } from "../server/schema";
 import { AppError } from "../server/errors";
 
 describe("extractJSON", () => {
@@ -22,7 +22,7 @@ describe("extractJSON", () => {
 
 describe("schema converters", () => {
   it("Gemini: upper-case types, no additionalProperties, optional keys stay optional", () => {
-    const g: any = toGeminiSchema(SCHEMA_B);
+    const g: any = toGeminiSchema(SCHEMA_R);
     expect(g.type).toBe("OBJECT");
     expect(JSON.stringify(g)).not.toContain("additionalProperties");
     const step = g.properties.rebuild.items.properties.steps.items;
@@ -30,10 +30,10 @@ describe("schema converters", () => {
   });
 
   it("OpenAI strict: every key required and extras forbidden", () => {
-    const s: any = toStrictSchema(SCHEMA_B);
+    const s: any = toStrictSchema(SCHEMA_R);
     const step = s.properties.rebuild.items.properties.steps.items;
     expect(step.required).toEqual(["action", "command", "check", "source"]);
     expect(step.additionalProperties).toBe(false);
-    expect(s.properties.projects.items.properties.minutes.type).toBe("integer");
+    expect((toStrictSchema(SCHEMA_P) as any).properties.projects.items.properties.minutes.type).toBe("integer");
   });
 });

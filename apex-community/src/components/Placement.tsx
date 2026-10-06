@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Level, Tour } from "../types";
+import { levelFromScore } from "../lib/profile";
 
 const RESULT_LINE: Record<Level, string> = {
   novice:
@@ -12,10 +13,13 @@ const RESULT_LINE: Record<Level, string> = {
 
 export default function Placement({
   tour,
-  onLevel,
+  onSubmit,
+  onSkip,
 }: {
   tour: Tour;
-  onLevel: (level: Level) => void;
+  /** One answer index per question. */
+  onSubmit: (answers: number[]) => void;
+  onSkip: () => void;
 }) {
   const [answers, setAnswers] = useState<(number | null)[]>(tour.placement.map(() => null));
   const [level, setLevel] = useState<Level | null>(null);
@@ -23,8 +27,7 @@ export default function Placement({
 
   function seeLevel() {
     const score = answers.reduce<number>((sum, a, i) => sum + (a === tour.placement[i].answerIndex ? 1 : 0), 0);
-    const next: Level = score <= 1 ? "novice" : score <= 3 ? "intermediate" : "advanced";
-    setLevel(next);
+    setLevel(levelFromScore(score, tour.placement.length));
   }
 
   function retake() {
@@ -37,8 +40,8 @@ export default function Placement({
       <p className="stage-kicker">step 2 of 4</p>
       <h2 className="stage-title">Check your level</h2>
       <p className="stage-intro">
-        Five questions about {tour.repo}. Answer honestly — the result decides where the projects
-        start, not a score to defend.
+        Five questions about {tour.repo}. Answer honestly — your projects and rebuild guide are
+        written from what you miss, not a score to defend.
       </p>
 
       <div className="q-list">
@@ -73,6 +76,9 @@ export default function Placement({
             See my level
           </button>
           <span className="cta-note">{answered ? "Ready when you are." : "Answer all five to continue."}</span>
+          <button type="button" className="btn btn-ghost" onClick={onSkip}>
+            Skip, start from the basics
+          </button>
         </div>
       )}
 
@@ -84,8 +90,8 @@ export default function Placement({
             <p className="result-line">{RESULT_LINE[level]}</p>
           </div>
           <div className="placement-actions">
-            <button type="button" className="btn btn-solid" onClick={() => onLevel(level)}>
-              Tune my projects
+            <button type="button" className="btn btn-solid" onClick={() => onSubmit(answers.map((a) => a ?? 0))}>
+              Build my projects
             </button>
             <button type="button" className="btn btn-ghost" onClick={retake}>
               Retake the five

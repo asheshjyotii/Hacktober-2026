@@ -1,23 +1,17 @@
 import { useState } from "react";
-import type { Level, Tour } from "../types";
+import type { Plan, Tour } from "../types";
 import { blobUrl } from "../lib/github";
-
-const START_AT: Record<Level, number> = { novice: 1, intermediate: 2, advanced: 3 };
-
-const NOTE_FOR: Record<Level, Record<number, string>> = {
-  novice: { 1: "for you: do this one first", 2: "next, after the warm-up", 3: "the goal — take your time" },
-  intermediate: { 1: "for you: optional — skim the pattern", 2: "for you: start here", 3: "after this one" },
-  advanced: { 1: "for you: skim", 2: "for you: skim", 3: "for you: start here" },
-};
 
 export default function Projects({
   tour,
-  level,
+  plan,
   onNext,
+  onRetake,
 }: {
   tour: Tour;
-  level: Level | null;
+  plan: Plan;
   onNext: () => void;
+  onRetake: () => void;
 }) {
   const [done, setDone] = useState<Set<string>>(new Set());
 
@@ -37,20 +31,26 @@ export default function Projects({
         the project — then the guide does the whole thing end to end.
       </p>
 
-      {level && (
-        <div className="calibrate">
-          Calibrated for <b>{level}</b>: start at project {START_AT[level]}. The notes below mark
-          which ones are yours.
-        </div>
-      )}
-      {!level && (
-        <div className="calibrate">
-          Answer the five placement questions in step 2 and these projects tune themselves to your
-          level.
-        </div>
-      )}
+      <div className="calibrate">
+        {plan.profile.skipped ? (
+          <>You skipped the check, so this plan starts from the basics.</>
+        ) : (
+          <>
+            Built for <b>{plan.profile.level}</b> ({plan.profile.score}/{plan.profile.total} on the check)
+            {plan.profile.missed.length > 0 && (
+              <>
+                , aimed at what you missed: {plan.profile.missed.map((m) => m.tests.toLowerCase()).join(", ")}
+              </>
+            )}
+            .
+          </>
+        )}{" "}
+        <button type="button" className="link-btn" onClick={onRetake}>
+          {plan.profile.skipped ? "Take the check instead" : "Retake the check"}
+        </button>
+      </div>
 
-      {tour.projects.map((p) => (
+      {plan.projects.map((p) => (
         <article key={p.n} className="project">
           <header className="project-head">
             <span className="project-kicker">project {p.n}</span>
@@ -59,7 +59,7 @@ export default function Projects({
           </header>
           <h3 className="project-title">{p.title}</h3>
           <p className="project-goal">{p.goal}</p>
-          {level && <p className="project-note" style={{ padding: "8px 22px 0" }}>{NOTE_FOR[level][p.n]}</p>}
+          {p.focus && <p className="project-note" style={{ padding: "8px 22px 0" }}>for you: {p.focus}</p>}
           <div className="project-body">
             <div className="project-cols">
               <div>

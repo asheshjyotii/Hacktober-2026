@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mentionedPaths, parseFileChoice, pathRefs, sanitizeMessages, systemPrompt, tourContext } from "../server/chat";
 import { MOCK_TOUR } from "../src/data/mockTour";
 import { AppError } from "../server/errors";
+import type { Plan } from "../src/types";
 
 const ranked = ["README.md", "src/app.js", "src/lib/db.js", "other/db.js", "package.json"];
 
@@ -71,8 +72,24 @@ describe("context building", () => {
   it("includes the tour facts and stays under the cap", () => {
     const ctx = tourContext(MOCK_TOUR);
     expect(ctx).toContain(MOCK_TOUR.repo);
-    expect(ctx).toContain(MOCK_TOUR.projects[0].title);
+    expect(ctx).not.toContain("LEARNER PLAN");
     expect(ctx.length).toBeLessThanOrEqual(12000);
+  });
+
+  it("adds the learner's plan only when there is one", () => {
+    const plan: Plan = {
+      repo: "o/r",
+      commit: "abc",
+      fetchedAt: "",
+      verified: { ok: 1, total: 1 },
+      profile: { level: "novice", skipped: false, score: 1, total: 5, missed: [], known: [], key: "novice-01111" },
+      projects: [{ n: 1, tag: "warm-up", title: "Unique Warmup Title", goal: "g", study: ["a.js"], steps: ["s"], checklist: [], minutes: 20 }],
+      rebuild: [{ phase: "Phase Zero", steps: [{ action: "make it", check: "c", source: "a.js" }] }],
+    };
+    const ctx = tourContext(MOCK_TOUR, plan);
+    expect(ctx).toContain("LEARNER PLAN (novice)");
+    expect(ctx).toContain("Unique Warmup Title");
+    expect(ctx).toContain("Phase Zero");
   });
 
   it("states the learner level, the rules, and any loaded file contents", () => {

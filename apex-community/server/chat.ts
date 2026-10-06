@@ -1,7 +1,8 @@
 import { AppError } from "./errors";
 import { generateJSON, generateText, type ChatMessage, type ModelEnv } from "./model";
-import { loadMeta, loadTour, type RepoMeta } from "./cache";
-import type { Level, Stage, Tour } from "../src/types";
+import { loadMeta, loadPlan, loadTour, type RepoMeta } from "./cache";
+import { fetchRaw } from "./repo";
+import type { Level, Plan, Stage, Tour } from "../src/types";
 
 export interface ChatRequest {
   repo: string;
@@ -9,6 +10,8 @@ export interface ChatRequest {
   messages: { role: string; content: string }[];
   stage?: string;
   level?: string | null;
+  /** Profile key of the learner's plan, if they have one. */
+  plan?: string | null;
 }
 
 /** A backticked path-like token in a reply: `path` is the real file, or null if it is not in the repo. */
@@ -56,7 +59,7 @@ export function sanitizeMessages(raw: unknown): ChatMessage[] {
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The tour, flattened into text the model can lean on. Capped so free-tier limits survive. */
-export function tourContext(t: Tour): string {
+export function tourContext(t: Tour, plan?: Plan | null): string {
   const lines: string[] = [
     `REPO: ${t.repo} (branch ${t.branch}, commit ${t.commit})`,
     `SUMMARY: ${t.overview.summary}`,
@@ -70,13 +73,17 @@ export function tourContext(t: Tour): string {
     ...t.readingPath.map((s) => `${s.order}. ${s.path}: ${s.why}`),
     "GLOSSARY:",
     ...t.glossary.map((g) => `- ${g.term}: ${g.plain} (see ${g.seenIn})`),
-    "PROJECTS:",
-    ...t.projects.map(
-      (p) => `${p.n}. [${p.tag}] ${p.title}: ${p.goal}\n   study: ${p.study.join(", ")}\n   steps: ${p.steps.join(" | ")}`,
-    ),
-    "REBUILD PHASES:",
-    ...t.rebuild.map((ph) => `- ${ph.phase}: ${ph.steps.map((s) => s.action).join("; ")}`),
   ];
+  if (plan) {
+    lines.push(
+      `LEARNER PLAN (${plan.profile.skipped ? "skipped quiz" : plan.profile.level}):`,
+      ...plan.projects.map(
+        (p) => `${p.n}. [${p.tag}] ${p.title}: ${p.goal}\n   study: ${p.study.join(", ")}\n   steps: ${p.steps.join(" | ")}`,
+      ),
+      "REBUILD PHASES:",
+      ...plan.rebuild.map((ph) => `- ${ph.phase}: ${ph.steps.map((s) => s.action).join("; ")}`),
+    );
+  }
   return clip(lines.join("\n"), TOUR_CHARS);
 }
 
@@ -157,22 +164,9 @@ async function pickFiles(env: ModelEnv, t: Tour, meta: RepoMeta, question: strin
   }
 }
 
-async function fetchFile(meta: RepoMeta, p: string): Promise<{ path: string; text: string } | null> {
-  const url = `https://raw.githubusercontent.com/${meta.repo}/${meta.commit}/${p.split("/").map(encodeURIComponent).join("/")}`;
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-    if (!r.ok) return null;
-    const all = (await r.text()).split("\n");
-    let text = all.slice(0, FILE_LINES).join("\n");
-    const cut = all.length > FILE_LINES || text.length > FILE_CHARS;
-    text = text.slice(0, FILE_CHARS) + (cut ? "\n... (file continues; only the start is shown)" : "");
-    return { path: p, text };
-  } catch {
-    return null;
-  }
-}
+const fetchFile = (meta: RepoMeta, p: string) => fetchRaw(meta.repo, meta.commit, p, FILE_LINES, FILE_CHARS);
 
-export function systemPrompt(t: Tour, meta: RepoMeta, stage: Stage | null, level: Level | null, files: { path: string; text: string }[]): string {
+export function systemPrompt(t: Tour, meta: RepoMeta, stage: Stage | null, level: Level | null, files: { path: string; text: string }[], plan: Plan | null = null): string {
   return [
     `You are a patient mentor helping a developer understand the GitHub repository ${t.repo}. They are using DestructGitHub, a learning tour with four steps: understand, check your level, three projects, rebuild guide.`,
     "",
@@ -185,7 +179,7 @@ export function systemPrompt(t: Tour, meta: RepoMeta, stage: Stage | null, level
     "",
     `LEARNER STATE: step = ${stage ?? "unknown"}; level = ${level ?? "not tested yet"}.`,
     "",
-    `TOUR NOTES:\n${tourContext(t)}`,
+    `TOUR NOTES:\n${tourContext(t, plan)}`,
     "",
     `PATH LIST (top ${Math.min(150, meta.ranked.length)} of the verified files):\n${meta.ranked.slice(0, 150).join("\n")}`,
     files.length
@@ -210,9 +204,10 @@ export async function chat(env: ModelEnv, req: ChatRequest): Promise<ChatReply> 
   if (!picks.length) picks = await pickFiles(env, tour, meta, question, lastReply);
   const files = (await Promise.all(picks.map((p) => fetchFile(meta, p)))).filter((f): f is { path: string; text: string } => !!f);
 
+  const plan = typeof req.plan === "string" ? loadPlan(repo, sha, req.plan) : null;
   const stage = STAGES.find((s) => s === req.stage) ?? null;
   const level = LEVELS.find((l) => l === req.level) ?? null;
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt(tour, meta, stage, level, files) }, ...history];
+  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt(tour, meta, stage, level, files, plan) }, ...history];
   const reply = await generateText(env, messages, { maxTokens: 1500, temperature: 0.3 });
   return { reply, refs: pathRefs(reply, meta.ranked), sources: files.map((f) => f.path) };
 }

@@ -1,4 +1,4 @@
-import type { Stage, Tour } from "../types";
+import type { Plan, Stage, Tour } from "../types";
 import Verified from "./Verified";
 
 const STAGES: Stage[] = ["understand", "placement", "projects", "rebuild"];
@@ -6,17 +6,19 @@ const STAGES: Stage[] = ["understand", "placement", "projects", "rebuild"];
 const NODES: { stage: Stage; name: string; sub: string }[] = [
   { stage: "understand", name: "Understand", sub: "What it is, how it fits together" },
   { stage: "placement", name: "Check your level", sub: "Five questions, five answers" },
-  { stage: "projects", name: "Three projects", sub: "Warm-up, core work, blind rebuild" },
+  { stage: "projects", name: "Three projects", sub: "Written from your answers" },
   { stage: "rebuild", name: "Rebuild guide", sub: "End to end, from an empty folder" },
 ];
 
 export default function Trail({
   stage,
   tour,
+  plan,
   onPick,
 }: {
   stage: Stage;
   tour: Tour;
+  plan: Plan | null;
   onPick: (s: Stage) => void;
 }) {
   const current = STAGES.indexOf(stage);
@@ -57,7 +59,7 @@ export default function Trail({
           <span>
             {tour.branch} @ {tour.commit}
           </span>
-          <Verified ok={tour.verified.ok} total={tour.verified.total} />
+          <Verified ok={tour.verified.ok + (plan?.verified.ok ?? 0)} total={tour.verified.total + (plan?.verified.total ?? 0)} />
         </div>
       </aside>
       <p className="crumb">

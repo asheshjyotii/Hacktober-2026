@@ -1,5 +1,8 @@
-import type { Tour } from "../src/types";
+import type { Plan, Profile, Tour } from "../src/types";
 import type { RepoData } from "./repo";
+
+/** The minimum needed to verify paths: a real tree for one commit. */
+export type Known = Pick<RepoData, "repo" | "commit" | "paths">;
 
 const arr = (x: any): any[] => (Array.isArray(x) ? x : []);
 const str = (x: any, d = ""): string => (typeof x === "string" ? x : d);
@@ -42,28 +45,37 @@ export function auditA(a: any, paths: Set<string>): Audit {
   return { ...auditPaths(cited, paths), errors: errors.slice(0, 12) };
 }
 
-export function auditB(b: any, paths: Set<string>): Audit {
-  const projects = arr(b?.projects);
-  const placement = arr(b?.placement);
-  const rebuild = arr(b?.rebuild);
-  const cited = [
-    ...projects.flatMap((p) => arr(p?.study)),
-    ...rebuild.flatMap((ph) => arr(ph?.steps).map((s) => s?.source)),
-  ];
+export function auditQuiz(q: any, paths: Set<string>): Audit {
+  const placement = arr(q?.placement);
   const errors: string[] = [];
   if (placement.length !== 5) errors.push(`placement: need exactly 5 questions, got ${placement.length}`);
-  placement.forEach((q, i) => {
-    const n = arr(q?.options).length;
+  placement.forEach((x, i) => {
+    const n = arr(x?.options).length;
     if (n < 4) errors.push(`placement[${i}] needs 4 options, got ${n}`);
-    if (!Number.isInteger(q?.answerIndex) || q.answerIndex < 0 || q.answerIndex >= n) errors.push(`placement[${i}].answerIndex is out of range`);
+    if (!Number.isInteger(x?.answerIndex) || x.answerIndex < 0 || x.answerIndex >= n) errors.push(`placement[${i}].answerIndex is out of range`);
+    if (!str(x?.tests)) errors.push(`placement[${i}] has no "tests" concept`);
   });
-  if (projects.length !== 3) errors.push(`projects: need exactly 3, got ${projects.length}`);
-  projects.forEach((p, i) => {
-    if (!str(p?.title)) errors.push(`projects[${i}] has no title`);
-    if (arr(p?.steps).length < 3) errors.push(`projects[${i}] needs 3-5 steps`);
-  });
-  if (rebuild.length < 3) errors.push(`rebuild: need 3-5 phases, got ${rebuild.length}`);
+  const cited = placement.map((x) => x?.path).filter((p) => p !== undefined && p !== "");
   return { ...auditPaths(cited, paths), errors: errors.slice(0, 12) };
+}
+
+export function auditProjects(p: any, paths: Set<string>): Audit {
+  const projects = arr(p?.projects);
+  const errors: string[] = [];
+  if (projects.length !== 3) errors.push(`projects: need exactly 3, got ${projects.length}`);
+  projects.forEach((x, i) => {
+    if (!str(x?.title)) errors.push(`projects[${i}] has no title`);
+    if (arr(x?.steps).length < 3) errors.push(`projects[${i}] needs 3-5 steps`);
+    if (arr(x?.study).length < 1) errors.push(`projects[${i}] needs at least one study path`);
+  });
+  return { ...auditPaths(projects.flatMap((x) => arr(x?.study)), paths), errors: errors.slice(0, 12) };
+}
+
+export function auditRebuild(r: any, paths: Set<string>): Audit {
+  const rebuild = arr(r?.rebuild);
+  const errors: string[] = [];
+  if (rebuild.length < 3) errors.push(`rebuild: need 3-5 phases, got ${rebuild.length}`);
+  return { ...auditPaths(rebuild.flatMap((ph) => arr(ph?.steps).map((s) => s?.source)), paths), errors };
 }
 
 export function problems(au: Audit): string[] {
@@ -73,25 +85,28 @@ export function problems(au: Audit): string[] {
   ];
 }
 
-export function validate(a: any, b: any, r: RepoData, extra: Pick<Tour, "metrics" | "notices"> = {}): Tour {
-  let ok = 0;
-  let total = 0;
+/** Counts every cited path and keeps only the real ones. */
+function counter(r: Known) {
+  const c = { ok: 0, total: 0 };
   const check = (p: unknown): p is string => {
-    total++;
+    c.total++;
     const good = typeof p === "string" && r.paths.has(p);
-    if (good) ok++;
+    if (good) c.ok++;
     return good;
   };
-  const checkAll = (xs: unknown): string[] => arr(xs).filter(check) as string[];
+  return { c, check, checkAll: (xs: unknown): string[] => arr(xs).filter(check) as string[] };
+}
+
+export function validateTour(a: any, q: any, r: RepoData, extra: Pick<Tour, "metrics" | "notices"> = {}): Tour {
+  const { c, check, checkAll } = counter(r);
 
   const components = arr(a?.components)
-    .map((c) => ({ id: str(c?.id), name: str(c?.name), role: str(c?.role), paths: checkAll(c?.paths) }))
-    .filter((c) => c.id && c.name);
-  const ids = new Set(components.map((c) => c.id));
+    .map((x) => ({ id: str(x?.id), name: str(x?.name), role: str(x?.role), paths: checkAll(x?.paths) }))
+    .filter((x) => x.id && x.name);
+  const ids = new Set(components.map((x) => x.id));
   const edges = arr(a?.edges)
     .map((e) => ({ from: str(e?.from), to: str(e?.to), label: str(e?.label) }))
     .filter((e) => ids.has(e.from) && ids.has(e.to));
-
   const readingPath = arr(a?.readingPath)
     .filter((s) => check(s?.path))
     .map((s, i) => ({ order: i + 1, path: str(s.path), why: str(s.why) }));
@@ -99,52 +114,24 @@ export function validate(a: any, b: any, r: RepoData, extra: Pick<Tour, "metrics
     .filter((g) => str(g?.term) && check(g?.seenIn))
     .map((g) => ({ term: str(g.term), plain: str(g.plain), seenIn: str(g.seenIn) }));
 
-  const placement = arr(b?.placement)
-    .map((q) => {
-      const options = arr(q?.options).map((o) => str(o)).filter(Boolean);
-      const ai = Number.isInteger(q?.answerIndex) ? q.answerIndex : 0;
+  const placement = arr(q?.placement)
+    .map((x) => {
+      const options = arr(x?.options).map((o) => str(o)).filter(Boolean);
+      const ai = Number.isInteger(x?.answerIndex) ? x.answerIndex : 0;
+      const hasPath = x?.path !== undefined && x?.path !== "";
+      const path = hasPath && check(x.path) ? str(x.path) : "";
       return {
-        question: str(q?.question),
+        question: str(x?.question),
         options,
         answerIndex: Math.max(0, Math.min(options.length - 1, ai)),
-        tests: str(q?.tests, "the basics"),
+        tests: str(x?.tests, "the basics"),
+        ...(path ? { path } : {}),
       };
     })
-    .filter((q) => q.question && q.options.length >= 2)
+    .filter((x) => x.question && x.options.length >= 2)
     .slice(0, 5);
 
-  const projects = arr(b?.projects)
-    .slice(0, 3)
-    .map((p, i) => ({
-      n: i + 1,
-      tag: str(p?.tag, ["warm-up", "core", "blind rebuild"][i]),
-      title: str(p?.title),
-      goal: str(p?.goal),
-      study: checkAll(p?.study),
-      steps: arr(p?.steps).map((s) => str(s)).filter(Boolean),
-      checklist: arr(p?.checklist).map((s) => str(s)).filter(Boolean),
-      minutes: Number.isFinite(p?.minutes) ? Math.round(p.minutes) : [30, 60, 120][i],
-    }));
-
-  const rebuild = arr(b?.rebuild)
-    .map((ph) => ({
-      phase: str(ph?.phase),
-      steps: arr(ph?.steps)
-        .filter((s) => check(s?.source))
-        .map((s) => ({
-          action: str(s.action),
-          ...(str(s.command) ? { command: str(s.command) } : {}),
-          check: str(s.check),
-          source: str(s.source),
-        })),
-    }))
-    .filter((ph) => ph.phase && ph.steps.length);
-
-  const tree = r.ranked.slice(0, 40).sort().map((p) => ({
-    path: p,
-    depth: p.split("/").length - 1,
-    kind: "file" as const,
-  }));
+  const tree = r.ranked.slice(0, 40).sort().map((p) => ({ path: p, depth: p.split("/").length - 1, kind: "file" as const }));
   // add parent dirs so the illustration nests properly
   const withDirs: Tour["tree"] = [];
   const seen = new Set<string>();
@@ -165,7 +152,7 @@ export function validate(a: any, b: any, r: RepoData, extra: Pick<Tour, "metrics
     branch: r.branch,
     commit: r.commit.slice(0, 7),
     fetchedAt: new Date().toISOString(),
-    verified: { ok, total },
+    verified: { ok: c.ok, total: c.total },
     overview: {
       summary: str(a?.overview?.summary),
       stack: arr(a?.overview?.stack).map((s) => str(s)).filter(Boolean),
@@ -176,18 +163,63 @@ export function validate(a: any, b: any, r: RepoData, extra: Pick<Tour, "metrics
     readingPath,
     glossary,
     placement,
-    projects,
-    rebuild,
     tree: withDirs,
     ...(extra.metrics ? { metrics: extra.metrics } : {}),
     ...(extra.notices?.length ? { notices: extra.notices } : {}),
   };
 }
 
-/** Throws-worthy if the model gave us nothing usable. */
-export function usable(t: Tour): string | null {
+export function validatePlan(p: any, rb: any, r: Known, profile: Profile, extra: Pick<Plan, "metrics"> = {}): Plan {
+  const { c, check, checkAll } = counter(r);
+
+  const projects = arr(p?.projects)
+    .slice(0, 3)
+    .map((x, i) => ({
+      n: i + 1,
+      tag: str(x?.tag, ["warm-up", "core", "blind rebuild"][i]),
+      title: str(x?.title),
+      goal: str(x?.goal),
+      study: checkAll(x?.study),
+      steps: arr(x?.steps).map((s) => str(s)).filter(Boolean),
+      checklist: arr(x?.checklist).map((s) => str(s)).filter(Boolean),
+      minutes: Number.isFinite(x?.minutes) ? Math.round(x.minutes) : [30, 60, 120][i],
+      ...(str(x?.focus) ? { focus: str(x.focus) } : {}),
+    }));
+
+  const rebuild = arr(rb?.rebuild)
+    .map((ph) => ({
+      phase: str(ph?.phase),
+      steps: arr(ph?.steps)
+        .filter((s) => check(s?.source))
+        .map((s) => ({
+          action: str(s.action),
+          ...(str(s.command) ? { command: str(s.command) } : {}),
+          check: str(s.check),
+          source: str(s.source),
+        })),
+    }))
+    .filter((ph) => ph.phase && ph.steps.length);
+
+  return {
+    repo: r.repo,
+    commit: r.commit.slice(0, 7),
+    profile,
+    fetchedAt: new Date().toISOString(),
+    verified: { ok: c.ok, total: c.total },
+    projects,
+    rebuild,
+    ...(extra.metrics ? { metrics: extra.metrics } : {}),
+  };
+}
+
+export function usableTour(t: Tour): string | null {
   if (t.placement.length < 3) return "Model returned too few placement questions.";
-  if (t.projects.length < 3 || t.projects.some((p) => !p.title)) return "Model returned incomplete projects.";
   if (!t.overview.summary || t.readingPath.length === 0) return "Model returned an incomplete overview.";
+  return null;
+}
+
+export function usablePlan(p: Plan): string | null {
+  if (p.projects.length < 3 || p.projects.some((x) => !x.title || x.steps.length === 0)) return "Model returned incomplete projects.";
+  if (p.rebuild.length === 0) return "Model returned an empty rebuild guide.";
   return null;
 }

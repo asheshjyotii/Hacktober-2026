@@ -4,9 +4,10 @@ import { AppError, STATUS } from "./errors";
 import { parseRepo, readRepo } from "./repo";
 import { generate } from "./generate";
 import { DEFAULT_MODEL, type ModelEnv, type Provider } from "./model";
-import { validate, usable } from "./validate";
+import { validateTour, usableTour } from "./validate";
 import { loadMeta, loadTour, saveMeta, saveTour } from "./cache";
 import { chat, type ChatRequest } from "./chat";
+import { getPlan, type PlanRequest } from "./plan";
 import type { Tour } from "../src/types";
 
 interface Env {
@@ -42,9 +43,9 @@ export async function getTour(input: string, env: Env, choice: LlmChoice = {}): 
     if (!loadMeta(r.repo, r.commit)) saveMeta({ repo: r.repo, branch: r.branch, commit: r.commit, ranked: r.ranked.slice(0, 4000) });
     const hit = loadTour(r.repo, r.commit);
     if (hit) return hit;
-    const { a, b, metrics } = await generate(resolveModel(env, choice), r);
-    const tour = validate(a, b, r, { metrics, notices: r.notices });
-    const bad = usable(tour);
+    const { a, q, metrics } = await generate(resolveModel(env, choice), r);
+    const tour = validateTour(a, q, r, { metrics, notices: r.notices });
+    const bad = usableTour(tour);
     if (bad) throw new AppError("model", bad);
     saveTour(r.repo, r.commit, tour);
     return tour;
@@ -91,7 +92,8 @@ export function apiPlugin(env: Env): Plugin {
     }
     const isTour = url.startsWith("/api/tour");
     const isChat = url.startsWith("/api/chat");
-    if (!isTour && !isChat) return next();
+    const isPlan = url.startsWith("/api/plan");
+    if (!isTour && !isChat && !isPlan) return next();
     const send = (status: number, body: unknown) => {
       res.statusCode = status;
       res.setHeader("content-type", "application/json");
@@ -103,6 +105,11 @@ export function apiPlugin(env: Env): Plugin {
     };
     const choice: LlmChoice = { provider: h("x-llm-provider"), model: h("x-llm-model"), key: h("x-llm-key") };
     try {
+      if (isPlan) {
+        if (req.method !== "POST") throw new AppError("invalid", "Use POST.");
+        send(200, await getPlan(resolveModel(env, choice), (await readBody(req)) as PlanRequest));
+        return;
+      }
       if (isChat) {
         if (req.method !== "POST") throw new AppError("invalid", "Use POST.");
         const body = (await readBody(req)) as ChatRequest;

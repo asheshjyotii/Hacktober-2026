@@ -1,4 +1,4 @@
-/** Small JSON-schema subset describing the two model outputs, plus per-provider converters. */
+/** Small JSON-schema subset describing the model outputs, plus per-provider converters. */
 export interface JsonSchema {
   type: "object" | "array" | "string" | "integer";
   properties?: Record<string, JsonSchema>;
@@ -23,11 +23,17 @@ export const SCHEMA_A: JsonSchema = obj({
   glossary: list(obj({ term: S, plain: S, seenIn: S })),
 });
 
-export const SCHEMA_B: JsonSchema = obj({
-  placement: list(obj({ question: S, options: list(S), answerIndex: I, tests: S })),
+export const SCHEMA_Q: JsonSchema = obj({
+  placement: list(obj({ question: S, options: list(S), answerIndex: I, tests: S, path: S }, ["question", "options", "answerIndex", "tests"])),
+});
+
+export const SCHEMA_P: JsonSchema = obj({
   projects: list(
-    obj({ n: I, tag: S, title: S, goal: S, study: list(S), steps: list(S), checklist: list(S), minutes: I }),
+    obj({ n: I, tag: S, title: S, goal: S, focus: S, study: list(S), steps: list(S), checklist: list(S), minutes: I }),
   ),
+});
+
+export const SCHEMA_R: JsonSchema = obj({
   rebuild: list(
     obj({
       phase: S,

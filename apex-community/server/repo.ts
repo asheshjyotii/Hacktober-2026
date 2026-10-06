@@ -257,3 +257,25 @@ export async function readRepo(input: string, token?: string): Promise<RepoData>
 
   return { repo, branch, commit, paths, ranked, summary, excerpts, partial, notices };
 }
+
+/** The start of one file at a pinned commit, trimmed to a line and character budget. Null if it cannot be read. */
+export async function fetchRaw(
+  repo: string,
+  commit: string,
+  p: string,
+  lines: number,
+  chars: number,
+): Promise<{ path: string; text: string } | null> {
+  const url = `https://raw.githubusercontent.com/${repo}/${commit}/${p.split("/").map(encodeURIComponent).join("/")}`;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) return null;
+    const all = (await r.text()).split("\n");
+    let text = all.slice(0, lines).join("\n");
+    const cut = all.length > lines || text.length > chars;
+    text = text.slice(0, chars) + (cut ? "\n... (file continues; only the start is shown)" : "");
+    return { path: p, text };
+  } catch {
+    return null;
+  }
+}

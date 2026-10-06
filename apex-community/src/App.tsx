@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Level, Stage, Tour } from "./types";
+import type { Plan, Stage, Tour } from "./types";
 import Home from "./components/Home";
 import Generating from "./components/Generating";
 import Trail from "./components/Trail";
@@ -7,6 +7,7 @@ import Understand from "./components/Understand";
 import Placement from "./components/Placement";
 import Projects from "./components/Projects";
 import Rebuild from "./components/Rebuild";
+import PlanGate, { type PlanState } from "./components/PlanGate";
 import Settings from "./components/Settings";
 import Chat from "./components/Chat";
 import { loadSettings, saveSettings, settingsHeaders, type LlmSettings } from "./lib/settings";
@@ -31,7 +32,10 @@ const ERROR_TITLE: Record<string, string> = {
 export default function App() {
   const [view, setView] = useState<"home" | "generating" | "tour">("home");
   const [stage, setStage] = useState<Stage>("understand");
-  const [level, setLevel] = useState<Level | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [planState, setPlanState] = useState<PlanState>({ status: "idle" });
+  /** The answers the current plan (or attempt) came from; null = skipped. */
+  const [lastAnswers, setLastAnswers] = useState<number[] | null | undefined>(undefined);
   const [repo, setRepo] = useState<string>("");
   const [tour, setTour] = useState<Tour | null>(null);
   const [error, setError] = useState<ApiFailure | null>(null);
@@ -55,9 +59,37 @@ export default function App() {
     saveSettings(s);
   }
 
+  function resetPlan() {
+    setPlan(null);
+    setPlanState({ status: "idle" });
+    setLastAnswers(undefined);
+  }
+
+  /** Ask the server for projects and a rebuild guide written for these answers (null = skipped). */
+  async function requestPlan(answers: number[] | null) {
+    if (!tour) return;
+    setLastAnswers(answers);
+    setPlan(null);
+    setPlanState({ status: "loading" });
+    setStage("projects");
+    try {
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...settingsHeaders(llm) },
+        body: JSON.stringify({ repo: tour.repo, commit: tour.commit, answers }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error?.message ?? `Request failed (${res.status}).`);
+      setPlan(body as Plan);
+      setPlanState({ status: "idle" });
+    } catch (e) {
+      setPlanState({ status: "error", error: { kind: "unknown", message: e instanceof Error ? e.message : "Something went wrong." } });
+    }
+  }
+
   async function start(nextRepo: string) {
     setRepo(nextRepo);
-    setLevel(null);
+    resetPlan();
     setStage("understand");
     setTour(null);
     setError(null);
@@ -90,7 +122,7 @@ export default function App() {
     setRepo("");
     setTour(null);
     setError(null);
-    setLevel(null);
+    resetPlan();
     setStage("understand");
     setShowChat(false);
   }
@@ -155,12 +187,12 @@ export default function App() {
       )}
 
       {view === "tour" && tour && (
-        <Chat tour={tour} stage={stage} level={level} llm={llm} open={showChat} onClose={() => setShowChat(false)} />
+        <Chat tour={tour} stage={stage} level={plan?.profile.level ?? null} planKey={plan?.profile.key ?? null} llm={llm} open={showChat} onClose={() => setShowChat(false)} />
       )}
 
       {view === "tour" && tour && (
         <div className="shell-main">
-          <Trail stage={stage} tour={tour} onPick={setStage} />
+          <Trail stage={stage} tour={tour} plan={plan} onPick={setStage} />
           <main className="content" id="main">
             {tour.notices && tour.notices.length > 0 && (
               <aside className="notice" role="note">
@@ -174,16 +206,21 @@ export default function App() {
             )}
             {stage === "understand" && <Understand tour={tour} onNext={() => setStage("placement")} />}
             {stage === "placement" && (
-              <Placement
-                tour={tour}
-                onLevel={(l) => {
-                  setLevel(l);
-                  setStage("projects");
-                }}
+              <Placement tour={tour} onSubmit={(a) => requestPlan(a)} onSkip={() => requestPlan(null)} />
+            )}
+            {(stage === "projects" || stage === "rebuild") && !plan && (
+              <PlanGate
+                repo={tour.repo}
+                state={planState}
+                onQuiz={() => setStage("placement")}
+                onSkip={() => requestPlan(null)}
+                onRetry={() => requestPlan(lastAnswers ?? null)}
               />
             )}
-            {stage === "projects" && <Projects tour={tour} level={level} onNext={() => setStage("rebuild")} />}
-            {stage === "rebuild" && <Rebuild tour={tour} onRestart={restart} />}
+            {stage === "projects" && plan && (
+              <Projects tour={tour} plan={plan} onNext={() => setStage("rebuild")} onRetake={() => setStage("placement")} />
+            )}
+            {stage === "rebuild" && plan && <Rebuild tour={tour} plan={plan} onRestart={restart} />}
           </main>
         </div>
       )}

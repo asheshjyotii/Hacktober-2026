@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Tour } from "../src/types";
+import type { Plan, Tour } from "../src/types";
 
 /** What chat needs to know about a repo without re-reading GitHub. */
 export interface RepoMeta {
@@ -15,6 +15,7 @@ export interface RepoMeta {
 const CACHE_DIR = path.resolve(".cache");
 const tours = new Map<string, Tour>();
 const metas = new Map<string, RepoMeta>();
+const plans = new Map<string, Plan>();
 
 export const key = (repo: string, sha: string) => `${repo}@${sha.slice(0, 7)}`;
 const file = (repo: string, sha: string, ext: string) =>
@@ -55,4 +56,19 @@ export function loadMeta(repo: string, sha: string): RepoMeta | null {
 export function saveMeta(meta: RepoMeta) {
   metas.set(key(meta.repo, meta.commit), meta);
   writeJSON(file(meta.repo, meta.commit, ".meta.json"), meta);
+}
+
+/** Profile keys are built from level and 0/1 bits, but sanitise anyway: they end up in a file name. */
+const safe = (k: string) => k.replace(/[^\w-]/g, "_").slice(0, 40);
+
+export function loadPlan(repo: string, sha: string, profileKey: string): Plan | null {
+  const k = `${key(repo, sha)}#${safe(profileKey)}`;
+  const hit = plans.get(k) ?? readJSON<Plan>(file(repo, sha, `.plan.${safe(profileKey)}.json`));
+  if (hit) plans.set(k, hit);
+  return hit;
+}
+
+export function savePlan(repo: string, sha: string, plan: Plan) {
+  plans.set(`${key(repo, sha)}#${safe(plan.profile.key)}`, plan);
+  writeJSON(file(repo, sha, `.plan.${safe(plan.profile.key)}.json`), plan);
 }

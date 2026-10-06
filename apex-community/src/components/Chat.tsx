@@ -32,6 +32,7 @@ export default function Chat({
   tour,
   stage,
   level,
+  planKey,
   llm,
   open,
   onClose,
@@ -39,6 +40,8 @@ export default function Chat({
   tour: Tour;
   stage: Stage;
   level: Level | null;
+  /** Profile key of the learner's plan, if one exists. */
+  planKey: string | null;
   llm: LlmSettings;
   open: boolean;
   onClose: () => void;
@@ -90,6 +93,7 @@ export default function Chat({
           commit: tour.commit,
           stage,
           level,
+          plan: planKey,
           messages: history.slice(-8).map((m) => ({ role: m.role, content: m.content })),
         }),
       });
