@@ -54,7 +54,7 @@ export async function getTour(input: string, env: Env, choice: LlmChoice = {}): 
       return t;
     }
     const { a, b, metrics } = await generate(resolveModel(env, choice), r);
-    const tour = validate(a, b, r, { metrics });
+    const tour = validate(a, b, r, { metrics, notices: r.notices });
     const bad = usable(tour);
     if (bad) throw new AppError("model", bad);
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -93,7 +93,7 @@ export function apiPlugin(env: Env): Plugin {
     } catch (e) {
       const err = e instanceof AppError ? e : new AppError("unknown", e instanceof Error ? e.message : "Unknown error.");
       console.error(`[api] ${err.kind}: ${err.message}`);
-      send(STATUS[err.kind], { error: { kind: err.kind, message: err.message } });
+      send(STATUS[err.kind], { error: { kind: err.kind, message: err.message, retryAfter: err.retryAfter } });
     }
   };
   return {

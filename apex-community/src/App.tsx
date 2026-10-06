@@ -10,13 +10,30 @@ import Rebuild from "./components/Rebuild";
 import Settings from "./components/Settings";
 import { loadSettings, saveSettings, settingsHeaders, type LlmSettings } from "./lib/settings";
 
+interface ApiFailure {
+  kind: string;
+  message: string;
+  retryAfter?: number;
+}
+
+/** Errors worth a plain "try again" button; the others need a different repo or settings. */
+const RETRYABLE = new Set(["rate_limited", "timeout", "model", "unknown"]);
+
+const ERROR_TITLE: Record<string, string> = {
+  not_found: "Couldn't find that repository",
+  private: "That repository isn't public",
+  rate_limited: "Slow down a moment",
+  timeout: "That took too long",
+  invalid: "That isn't a repository",
+};
+
 export default function App() {
   const [view, setView] = useState<"home" | "generating" | "tour">("home");
   const [stage, setStage] = useState<Stage>("understand");
   const [level, setLevel] = useState<Level | null>(null);
   const [repo, setRepo] = useState<string>("");
   const [tour, setTour] = useState<Tour | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiFailure | null>(null);
   const [llm, setLlm] = useState<LlmSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [server, setServer] = useState({ serverKey: false, model: "" });
@@ -47,13 +64,21 @@ export default function App() {
     try {
       const res = await fetch(`/api/tour?repo=${encodeURIComponent(nextRepo)}`, { headers: settingsHeaders(llm) });
       const body = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(body?.error?.message ?? `Request failed (${res.status}).`);
+      if (!res.ok) {
+        const f = body?.error;
+        throw { kind: f?.kind ?? "unknown", message: f?.message ?? `Request failed (${res.status}).`, retryAfter: f?.retryAfter } as ApiFailure;
+      }
       await minWait;
       setTour(body as Tour);
       setView("tour");
     } catch (e) {
       await minWait;
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      const f = e as Partial<ApiFailure>;
+      setError({
+        kind: f?.kind ?? "unknown",
+        message: f?.message ?? (e instanceof Error ? e.message : "Something went wrong."),
+        retryAfter: f?.retryAfter,
+      });
     }
   }
 
@@ -96,11 +121,24 @@ export default function App() {
 
       {view === "generating" && error && (
         <div className="err-panel" role="alert">
-          <h2 className="gen-title">Couldn't take {repo} apart</h2>
-          <p>{error}</p>
-          <button type="button" className="btn btn-solid" onClick={restart}>
-            Try another repo
-          </button>
+          <h2 className="gen-title">{ERROR_TITLE[error.kind] ?? `Couldn't take ${repo} apart`}</h2>
+          <p className="gen-repo">{repo}</p>
+          <p>{error.message}</p>
+          <div className="err-actions">
+            {RETRYABLE.has(error.kind) && (
+              <button type="button" className="btn btn-solid" onClick={() => start(repo)}>
+                Try again
+              </button>
+            )}
+            {error.kind === "model" && (
+              <button type="button" className="btn" onClick={() => setShowSettings(true)}>
+                Open Settings
+              </button>
+            )}
+            <button type="button" className={`btn ${RETRYABLE.has(error.kind) ? "" : "btn-solid"}`} onClick={restart}>
+              Try another repo
+            </button>
+          </div>
         </div>
       )}
 
@@ -108,6 +146,16 @@ export default function App() {
         <div className="shell-main">
           <Trail stage={stage} tour={tour} onPick={setStage} />
           <main className="content" id="main">
+            {tour.notices && tour.notices.length > 0 && (
+              <aside className="notice" role="note">
+                <b>Heads up</b>
+                <ul>
+                  {tour.notices.map((n) => (
+                    <li key={n}>{n}</li>
+                  ))}
+                </ul>
+              </aside>
+            )}
             {stage === "understand" && <Understand tour={tour} onNext={() => setStage("placement")} />}
             {stage === "placement" && (
               <Placement

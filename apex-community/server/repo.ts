@@ -14,6 +14,8 @@ export interface RepoData {
   summary: string;
   excerpts: Excerpt[];
   partial: boolean;
+  /** Non-fatal caveats to show the user. */
+  notices: string[];
 }
 
 export interface ContextOpts {
@@ -53,17 +55,47 @@ export function parseRepo(input: string): string {
   return cleaned;
 }
 
+/** Seconds until GitHub lets us back in, from retry-after or the rate-limit reset header. */
+export function retryAfterSeconds(h: { get(name: string): string | null }, now = Date.now()): number | undefined {
+  const ra = Number(h.get("retry-after"));
+  if (ra > 0) return Math.ceil(ra);
+  const reset = Number(h.get("x-ratelimit-reset"));
+  if (reset > 0) return Math.max(1, Math.ceil(reset - now / 1000));
+  return undefined;
+}
+
+export function rateLimitMessage(wait: number | undefined, hasToken: boolean): string {
+  const when = wait === undefined ? "later" : wait < 90 ? `in about ${wait}s` : `in about ${Math.ceil(wait / 60)} min`;
+  return `GitHub rate limit reached. Try again ${when}${hasToken ? "." : ", or add a GITHUB_TOKEN to .env for a much higher limit."}`;
+}
+
 async function gh<T>(path: string, token?: string): Promise<T> {
-  const res = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      accept: "application/vnd.github+json",
-      "user-agent": "destructgithub",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-  });
-  if (res.status === 404) throw new AppError("not_found", "Repository not found, or it is private.");
+  let res: Response;
+  try {
+    res = await fetch(`https://api.github.com${path}`, {
+      headers: {
+        accept: "application/vnd.github+json",
+        "user-agent": "destructgithub",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new AppError("timeout", "GitHub took too long to answer. Try again in a moment.");
+    }
+    throw new AppError("unknown", "Could not reach GitHub. Check your connection.");
+  }
+  if (res.status === 404) {
+    throw new AppError("not_found", "Repository not found. If it is private, DestructGitHub can only read public repositories.");
+  }
   if (res.status === 403 || res.status === 429) {
-    throw new AppError("rate_limited", "GitHub rate limit reached. Add GITHUB_TOKEN or try again later.");
+    const limited = res.status === 429 || res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after");
+    if (limited) {
+      const wait = retryAfterSeconds(res.headers);
+      throw new AppError("rate_limited", rateLimitMessage(wait, !!token), wait);
+    }
+    throw new AppError("private", "GitHub refused access to this repository. It may be private or blocked.");
   }
   if (!res.ok) throw new AppError("unknown", `GitHub API error ${res.status}.`);
   return (await res.json()) as T;
@@ -167,6 +199,9 @@ function folderSummary(paths: string[]): string {
   return lines.slice(0, 40).join("\n");
 }
 
+const LARGE_REPO_FILES = 6000;
+const TOP_LEVEL_DEPTH = 3;
+
 export async function readRepo(input: string, token?: string): Promise<RepoData> {
   const repo = parseRepo(input);
   const meta = await gh<{ default_branch: string; private?: boolean }>(`/repos/${repo}`, token);
@@ -177,9 +212,25 @@ export async function readRepo(input: string, token?: string): Promise<RepoData>
     `/repos/${repo}/git/trees/${commit}?recursive=1`,
     token,
   );
+  if (meta.private) throw new AppError("private", "This repository is private. DestructGitHub only reads public repositories.");
   const partial = tree.truncated;
+  const notices: string[] = [];
   let all = tree.tree.filter((t) => t.type === "blob").map((t) => t.path).filter(keep);
   if (all.length === 0) throw new AppError("not_found", "No readable source files in this repository.");
+
+  // Very large repo: stay on the top-level folders so every cited path is still real and the prompt stays small.
+  if (partial || all.length > LARGE_REPO_FILES) {
+    const deep = all.length;
+    all = all.filter((p) => p.split("/").length <= TOP_LEVEL_DEPTH);
+    if (all.length === 0) all = tree.tree.filter((t) => t.type === "blob").map((t) => t.path).filter(keep).slice(0, 400);
+    notices.push(
+      `This is a very large repository${partial ? " (GitHub only listed part of its tree)" : ` (${deep.toLocaleString()} files)`}. ` +
+        `The tour covers the top ${TOP_LEVEL_DEPTH} folder levels only, so deeper files are not mentioned.`,
+    );
+  }
+  if (!all.some((p) => /^readme(\.\w+)?$/i.test(p))) {
+    notices.push("No README found in the repository root, so the explanation comes from the code and file layout alone.");
+  }
 
   const paths = new Set(all);
   let ranked = rankPaths(all);
@@ -204,5 +255,5 @@ export async function readRepo(input: string, token?: string): Promise<RepoData>
   const excerpts = [...first, ...second];
   const summary = folderSummary(all);
 
-  return { repo, branch, commit, paths, ranked, summary, excerpts, partial };
+  return { repo, branch, commit, paths, ranked, summary, excerpts, partial, notices };
 }
