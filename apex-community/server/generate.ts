@@ -1,4 +1,7 @@
 import { generateJSON, type ModelEnv } from "./model";
+import { SCHEMA_A, SCHEMA_B, type JsonSchema } from "./schema";
+import { auditA, auditB, problems, type Audit } from "./validate";
+import type { TourMetrics } from "../src/types";
 import { buildContext, type RepoData } from "./repo";
 
 const RULES = `HARD RULES:
@@ -25,14 +28,61 @@ const SHAPE_B = `{
   "rebuild": [ { "phase": "Phase name", "steps": [ { "action": "what to do", "command": "optional shell command", "check": "how to verify it worked", "source": "PATH from list that this step mirrors" } ] } ]  // 3-5 phases, 2-4 steps each, to recreate the repo's core from an empty folder
 }`;
 
-function prompt(task: string, shape: string, context: string): string {
+export function prompt(task: string, shape: string, context: string): string {
   return `You are analysing a GitHub repository to build a learning tour for a newcomer.\n\n${RULES}\n\nTASK: ${task}\n\nOUTPUT SHAPE (comments after // are instructions, do not output them):\n${shape}\n\n${context}\n\nNow output the JSON object.`;
 }
 
-export async function generate(env: ModelEnv, r: RepoData): Promise<{ a: any; b: any }> {
+export function repairPrompt(original: string, list: string[]): string {
+  return `${original}\n\nYOUR PREVIOUS ANSWER HAD THESE PROBLEMS:\n${list.map((p) => `- ${p}`).join("\n")}\n\nOutput the COMPLETE corrected JSON object again. Copy paths only from the PATH LIST.`;
+}
+
+const score = (au: Audit) => au.invalid.length + au.errors.length;
+
+interface Pass {
+  data: any;
+  first: Audit;
+  last: Audit;
+  retries: number;
+}
+
+/** Generate, audit, and retry once with the concrete problems before giving up. */
+async function pass(
+  env: ModelEnv,
+  text: string,
+  schema: JsonSchema,
+  name: string,
+  audit: (d: any) => Audit,
+): Promise<Pass> {
+  const data = await generateJSON(env, text, { schema, schemaName: name });
+  const first = audit(data);
+  const list = problems(first);
+  if (!list.length) return { data, first, last: first, retries: 0 };
+  console.warn(`[generate] ${name}: ${list.length} problem(s), retrying once`);
+  try {
+    const again = await generateJSON(env, repairPrompt(text, list), { schema, schemaName: name });
+    const second = audit(again);
+    // only keep the retry if it is actually better
+    if (score(second) < score(first)) return { data: again, first, last: second, retries: 1 };
+  } catch (e) {
+    console.warn(`[generate] ${name}: retry failed (${e instanceof Error ? e.message : e}), keeping first answer`);
+  }
+  return { data, first, last: first, retries: 1 };
+}
+
+export async function generate(env: ModelEnv, r: RepoData): Promise<{ a: any; b: any; metrics: TourMetrics }> {
+  const t0 = Date.now();
   const [a, b] = await Promise.all([
-    generateJSON(env, prompt("Explain the architecture, reading order and vocabulary.", SHAPE_A, buildContext(r, { maxPaths: 200, files: 5, chars: 2600 }))),
-    generateJSON(env, prompt("Write the placement quiz, the three projects, and the rebuild guide.", SHAPE_B, buildContext(r, { maxPaths: 200, files: 3, chars: 2000 }))),
+    pass(env, prompt("Explain the architecture, reading order and vocabulary.", SHAPE_A, buildContext(r, { maxPaths: 200, files: 5, chars: 2600 })), SCHEMA_A, "tour_a", (d) => auditA(d, r.paths)),
+    pass(env, prompt("Write the placement quiz, the three projects, and the rebuild guide.", SHAPE_B, buildContext(r, { maxPaths: 200, files: 3, chars: 2000 })), SCHEMA_B, "tour_b", (d) => auditB(d, r.paths)),
   ]);
-  return { a, b };
+  return {
+    a: a.data,
+    b: b.data,
+    metrics: {
+      preOk: a.first.ok + b.first.ok,
+      preTotal: a.first.total + b.first.total,
+      retries: a.retries + b.retries,
+      ms: Date.now() - t0,
+    },
+  };
 }

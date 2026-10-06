@@ -62,6 +62,16 @@ export interface RebuildPhase {
   steps: RebuildStep[];
 }
 
+export interface TourMetrics {
+  /** Cited paths that were real on the first attempt / cited in total. */
+  preOk: number;
+  preTotal: number;
+  /** Model calls that were repeated because of bad paths or shape. */
+  retries: number;
+  /** Wall-clock generation time in ms. */
+  ms: number;
+}
+
 export interface Tour {
   repo: string;
   branch: string;
@@ -76,6 +86,10 @@ export interface Tour {
   placement: PlacementQuestion[];
   projects: Project[];
   rebuild: RebuildPhase[];
+  /** How accurate the model was before our checks and retry. */
+  metrics?: TourMetrics;
+  /** Non-fatal caveats shown above the tour (truncated tree, no README, ...). */
+  notices?: string[];
   /** Leaves for the exploded file-tree illustration. */
   tree: { path: string; depth: number; kind: "dir" | "file" }[];
 }

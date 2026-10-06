@@ -4,7 +4,76 @@ import type { RepoData } from "./repo";
 const arr = (x: any): any[] => (Array.isArray(x) ? x : []);
 const str = (x: any, d = ""): string => (typeof x === "string" ? x : d);
 
-export function validate(a: any, b: any, r: RepoData): Tour {
+export interface Audit {
+  /** Cited paths that are not in the real tree. */
+  invalid: string[];
+  /** Structural problems, phrased so they can be fed back to the model. */
+  errors: string[];
+  ok: number;
+  total: number;
+}
+
+function auditPaths(cited: unknown[], paths: Set<string>): Pick<Audit, "invalid" | "ok" | "total"> {
+  const invalid = new Set<string>();
+  let ok = 0;
+  for (const p of cited) {
+    if (typeof p === "string" && paths.has(p)) ok++;
+    else invalid.add(typeof p === "string" ? p : String(p));
+  }
+  return { invalid: [...invalid], ok, total: cited.length };
+}
+
+export function auditA(a: any, paths: Set<string>): Audit {
+  const components = arr(a?.components);
+  const cited = [
+    ...components.flatMap((c) => arr(c?.paths)),
+    ...arr(a?.readingPath).map((s) => s?.path),
+    ...arr(a?.glossary).map((g) => g?.seenIn),
+  ];
+  const errors: string[] = [];
+  if (!str(a?.overview?.summary)) errors.push("overview.summary is missing");
+  if (components.length < 3) errors.push(`components: need 3-6 items, got ${components.length}`);
+  const ids = new Set(components.map((c) => str(c?.id)));
+  for (const e of arr(a?.edges)) {
+    if (!ids.has(str(e?.from)) || !ids.has(str(e?.to))) errors.push(`edge ${str(e?.from)} -> ${str(e?.to)} uses an unknown component id`);
+  }
+  if (arr(a?.readingPath).length < 6) errors.push(`readingPath: need 6-10 steps, got ${arr(a?.readingPath).length}`);
+  if (arr(a?.glossary).length < 8) errors.push(`glossary: need 8-12 items, got ${arr(a?.glossary).length}`);
+  return { ...auditPaths(cited, paths), errors: errors.slice(0, 12) };
+}
+
+export function auditB(b: any, paths: Set<string>): Audit {
+  const projects = arr(b?.projects);
+  const placement = arr(b?.placement);
+  const rebuild = arr(b?.rebuild);
+  const cited = [
+    ...projects.flatMap((p) => arr(p?.study)),
+    ...rebuild.flatMap((ph) => arr(ph?.steps).map((s) => s?.source)),
+  ];
+  const errors: string[] = [];
+  if (placement.length !== 5) errors.push(`placement: need exactly 5 questions, got ${placement.length}`);
+  placement.forEach((q, i) => {
+    const n = arr(q?.options).length;
+    if (n < 4) errors.push(`placement[${i}] needs 4 options, got ${n}`);
+    if (!Number.isInteger(q?.answerIndex) || q.answerIndex < 0 || q.answerIndex >= n) errors.push(`placement[${i}].answerIndex is out of range`);
+  });
+  if (projects.length !== 3) errors.push(`projects: need exactly 3, got ${projects.length}`);
+  projects.forEach((p, i) => {
+    if (!str(p?.title)) errors.push(`projects[${i}] has no title`);
+    if (arr(p?.steps).length < 3) errors.push(`projects[${i}] needs 3-5 steps`);
+  });
+  if (rebuild.length < 3) errors.push(`rebuild: need 3-5 phases, got ${rebuild.length}`);
+  return { ...auditPaths(cited, paths), errors: errors.slice(0, 12) };
+}
+
+export function problems(au: Audit): string[] {
+  return [
+    ...(au.invalid.length ? [`These paths are NOT in the PATH LIST, replace or remove them: ${au.invalid.slice(0, 20).join(", ")}`] : []),
+    ...au.errors,
+  ];
+}
+
+export function validate(a: any, b: any, r: RepoData, extra: Pick<Tour, "metrics" | "notices"> = {}): Tour {
   let ok = 0;
   let total = 0;
   const check = (p: unknown): p is string => {
@@ -110,6 +179,8 @@ export function validate(a: any, b: any, r: RepoData): Tour {
     projects,
     rebuild,
     tree: withDirs,
+    ...(extra.metrics ? { metrics: extra.metrics } : {}),
+    ...(extra.notices?.length ? { notices: extra.notices } : {}),
   };
 }
 

@@ -53,8 +53,8 @@ export async function getTour(input: string, env: Env, choice: LlmChoice = {}): 
       mem.set(mk, t);
       return t;
     }
-    const { a, b } = await generate(resolveModel(env, choice), r);
-    const tour = validate(a, b, r);
+    const { a, b, metrics } = await generate(resolveModel(env, choice), r);
+    const tour = validate(a, b, r, { metrics });
     const bad = usable(tour);
     if (bad) throw new AppError("model", bad);
     fs.mkdirSync(CACHE_DIR, { recursive: true });

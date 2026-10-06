@@ -1,5 +1,10 @@
 import { AppError } from "./errors";
 
+export interface Excerpt {
+  path: string;
+  text: string;
+}
+
 export interface RepoData {
   repo: string;
   branch: string;
@@ -7,7 +12,7 @@ export interface RepoData {
   paths: Set<string>;
   ranked: string[];
   summary: string;
-  excerpts: { path: string; text: string }[];
+  excerpts: Excerpt[];
   partial: boolean;
 }
 
@@ -72,7 +77,7 @@ function keep(p: string): boolean {
   return !SKIP_DIR.test(p) && !SKIP_FILE.test(p);
 }
 
-function score(p: string): number {
+export function score(p: string): number {
   const lower = p.toLowerCase();
   const base = lower.slice(lower.lastIndexOf("/") + 1);
   const depth = p.split("/").length - 1;
@@ -80,11 +85,71 @@ function score(p: string): number {
   if (/^readme(\.\w+)?$/.test(lower)) s = 0;
   else if (/^(package\.json|pyproject\.toml|go\.mod|cargo\.toml|setup\.py|pom\.xml|build\.gradle|gemfile|composer\.json)$/.test(base) && depth <= 1) s = 5;
   else if (/^(main|index|app|server|cli|__main__|__init__|lib|mod|root)\.\w+$/.test(base)) s = 10;
+  // per-language entry points: Go cmd/<name>/main.go, Python cli/core/app, Rust src/main.rs + src/lib.rs
+  else if (/^(cli|core|wsgi|asgi|manage|api|router|routes|handler|engine)\.(py|go|rs|rb|ts|js)$/.test(base)) s = 14;
   else if (/(^|\/)cmd\//.test(lower)) s = 12;
   else if (/^(dockerfile|docker-compose\.ya?ml|makefile|tsconfig\.json)$/.test(base) || lower.startsWith(".github/workflows/")) s = 25;
   else if (/(^|\/)(src|lib|app|pkg|internal|core)\//.test(lower)) s = 35;
-  else if (/(^|\/)(test|tests|__tests__|docs?|examples?)\//.test(lower) || /\.(test|spec)\./.test(lower)) s = 70;
+  else if (/(^|\/)(test|tests|__tests__|docs?|examples?)\//.test(lower) || /\.(test|spec)\./.test(lower) || /_test\.go$|(^|\/)test_\w+\.py$/.test(lower)) s = 70;
   return s + depth * 3;
+}
+
+const JS_EXT = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", "/index.ts", "/index.tsx", "/index.js", "/index.mjs"];
+
+function joinRel(dir: string, rel: string): string {
+  const out = dir ? dir.split("/") : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "." || seg === "") continue;
+    if (seg === "..") out.pop();
+    else out.push(seg);
+  }
+  return out.join("/");
+}
+
+/** Files that `file` imports, resolved to real paths. Best effort: JS/TS, Python, Rust. */
+export function importedPaths(file: string, text: string, paths: Set<string>): string[] {
+  const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
+  const found = new Set<string>();
+  const add = (p: string) => {
+    if (p !== file && paths.has(p)) found.add(p);
+  };
+  if (/\.(m?[jt]sx?|cjs)$/.test(file)) {
+    for (const m of text.matchAll(/(?:from\s+|require\(\s*|import\(\s*|import\s+)["'](\.{1,2}\/[^"']+)["']/g)) {
+      const base = joinRel(dir, m[1]);
+      for (const e of JS_EXT) add(base + e);
+    }
+  } else if (/\.py$/.test(file)) {
+    const top = file.split("/")[0];
+    const roots = ["", "src/", "lib/", `${top}/`];
+    for (const m of text.matchAll(/^\s*(?:from\s+(\.*)([\w.]*)\s+import|import\s+([\w.]+))/gm)) {
+      const dots = m[1]?.length ?? 0;
+      const mod = (m[2] ?? m[3] ?? "").replace(/\./g, "/");
+      if (dots > 0) {
+        let d = dir;
+        for (let i = 1; i < dots; i++) d = d.includes("/") ? d.slice(0, d.lastIndexOf("/")) : "";
+        const base = joinRel(d, mod);
+        add(`${base}.py`);
+        add(`${base}/__init__.py`);
+      } else if (mod) {
+        for (const r of roots) {
+          add(`${r}${mod}.py`);
+          add(`${r}${mod}/__init__.py`);
+        }
+      }
+    }
+  } else if (/\.rs$/.test(file)) {
+    for (const m of text.matchAll(/^\s*(?:pub\s+)?mod\s+(\w+)\s*;/gm)) {
+      add(joinRel(dir, `${m[1]}.rs`));
+      add(joinRel(dir, `${m[1]}/mod.rs`));
+    }
+  }
+  return [...found];
+}
+
+/** Order files by importance. Files imported by entry points get a bonus. */
+export function rankPaths(all: string[], boost: Set<string> = new Set()): string[] {
+  const s = (p: string) => score(p) - (boost.has(p) ? 15 : 0);
+  return [...all].sort((a, b) => s(a) - s(b) || a.length - b.length);
 }
 
 function folderSummary(paths: string[]): string {
@@ -116,23 +181,27 @@ export async function readRepo(input: string, token?: string): Promise<RepoData>
   let all = tree.tree.filter((t) => t.type === "blob").map((t) => t.path).filter(keep);
   if (all.length === 0) throw new AppError("not_found", "No readable source files in this repository.");
 
-  const ranked = [...all].sort((a, b2) => score(a) - score(b2) || a.length - b2.length);
   const paths = new Set(all);
+  let ranked = rankPaths(all);
 
-  const top = ranked.slice(0, 8);
-  const fetched = await Promise.all(
-    top.map(async (p) => {
-      try {
-        const r = await fetch(`https://raw.githubusercontent.com/${repo}/${commit}/${p.split("/").map(encodeURIComponent).join("/")}`);
-        if (!r.ok) return null;
-        const text = (await r.text()).split("\n").slice(0, 120).join("\n").slice(0, 3200);
-        return { path: p, text };
-      } catch {
-        return null;
-      }
-    }),
-  );
-  const excerpts = fetched.filter((x): x is { path: string; text: string } => x !== null);
+  const fetchOne = async (p: string) => {
+    try {
+      const r = await fetch(`https://raw.githubusercontent.com/${repo}/${commit}/${p.split("/").map(encodeURIComponent).join("/")}`);
+      if (!r.ok) return null;
+      return { path: p, text: (await r.text()).split("\n").slice(0, 120).join("\n").slice(0, 3200) };
+    } catch {
+      return null;
+    }
+  };
+  const some = (xs: (Excerpt | null)[]) => xs.filter((x): x is Excerpt => x !== null);
+
+  // pass 1: the obvious entry files. Pass 2: whatever they import.
+  const first = some(await Promise.all(ranked.slice(0, 5).map(fetchOne)));
+  const boost = new Set(first.flatMap((e) => importedPaths(e.path, e.text, paths)));
+  ranked = rankPaths(all, boost);
+  const have = new Set(first.map((e) => e.path));
+  const second = some(await Promise.all(ranked.filter((p) => !have.has(p)).slice(0, 3).map(fetchOne)));
+  const excerpts = [...first, ...second];
   const summary = folderSummary(all);
 
   return { repo, branch, commit, paths, ranked, summary, excerpts, partial };
