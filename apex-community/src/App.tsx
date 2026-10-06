@@ -8,6 +8,7 @@ import Placement from "./components/Placement";
 import Projects from "./components/Projects";
 import Rebuild from "./components/Rebuild";
 import Settings from "./components/Settings";
+import Chat from "./components/Chat";
 import { loadSettings, saveSettings, settingsHeaders, type LlmSettings } from "./lib/settings";
 
 interface ApiFailure {
@@ -36,6 +37,7 @@ export default function App() {
   const [error, setError] = useState<ApiFailure | null>(null);
   const [llm, setLlm] = useState<LlmSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [server, setServer] = useState({ serverKey: false, model: "" });
 
   useEffect(() => {
@@ -60,6 +62,7 @@ export default function App() {
     setTour(null);
     setError(null);
     setView("generating");
+    setShowChat(false);
     const minWait = new Promise((r) => setTimeout(r, 1000));
     try {
       const res = await fetch(`/api/tour?repo=${encodeURIComponent(nextRepo)}`, { headers: settingsHeaders(llm) });
@@ -89,6 +92,7 @@ export default function App() {
     setError(null);
     setLevel(null);
     setStage("understand");
+    setShowChat(false);
   }
 
   return (
@@ -99,6 +103,14 @@ export default function App() {
         </div>
         <div className="head-meta">
           live repo analysis ·{" "}
+          {view === "tour" && tour && (
+            <>
+              <button type="button" className="link-btn" onClick={() => setShowChat((v) => !v)} aria-expanded={showChat}>
+                Ask
+              </button>{" "}
+              ·{" "}
+            </>
+          )}
           <button type="button" className="link-btn" onClick={() => setShowSettings((v) => !v)} aria-expanded={showSettings}>
             Settings
           </button>
@@ -140,6 +152,10 @@ export default function App() {
             </button>
           </div>
         </div>
+      )}
+
+      {view === "tour" && tour && (
+        <Chat tour={tour} stage={stage} level={level} llm={llm} open={showChat} onClose={() => setShowChat(false)} />
       )}
 
       {view === "tour" && tour && (
